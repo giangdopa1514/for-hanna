@@ -682,10 +682,11 @@
     setTimeout(function(){ if(picTimer) spawnPic(); }, 500);
     startFireworks();
     setTimeout(function(){ startConfetti(); }, 700);
-    submitTicket('🎉 ' + CONFIG.herName + ' clicked YES!', CONFIG.herName + ' just said YES 💙 (she has not picked the plan yet)', {}).catch(function(){});
+    yesClicked = true;
   });
 
   /* ---------- State ---------- */
+  var yesClicked = false;
   var state = { date:null, time:null, address:'', places:[], custom:'', food:[] };
 
   /* ---------- PAGE 3: calendar + time ---------- */
@@ -851,14 +852,48 @@
       }catch(e){ rej(e); }
     });
   }
+  var W3F_URL = 'https://api.web3forms.com/submit';
   function submitTicket(subject, msg, extra){
     if(!CONFIG.web3formsKey) return Promise.reject('nokey');
     var body = { access_key: CONFIG.web3formsKey, subject: subject, from_name: CONFIG.herName + ' - Date Invitation', message: msg };
     for(var k in extra){ if(Object.prototype.hasOwnProperty.call(extra,k)) body[k] = extra[k]; }
-    return fetch('https://api.web3forms.com/submit', {
+    return fetch(W3F_URL, {
       method:'POST', headers:{'Content-Type':'application/json', 'Accept':'application/json'}, body: JSON.stringify(body)
-    }).then(function(r){ return r.json(); }).then(function(j){ if(!j.success) throw j; return j; });
+    }).then(function(r){
+      return r.json().catch(function(){ return {}; }).then(function(j){
+        if(!r.ok || !j.success){ var e = { status: r.status, message: j.message || '' }; throw e; }
+        return j;
+      });
+    });
   }
+  // If she leaves after saying YES but before sending, mail whatever she picked so far
+  var lastPartial = '';
+  function sendPartial(){
+    if(ticketSent || sending || !yesClicked || !CONFIG.web3formsKey) return;
+    var parts = [];
+    if(state.date) parts.push('📅 ' + whenText0());
+    if(state.address && state.address.trim()) parts.push('🚗 Pick-up: ' + state.address.trim());
+    if(state.places.length || state.custom.trim()) parts.push('📍 ' + whereText());
+    if(state.food.length) parts.push('🍽️ ' + state.food.join(', '));
+    var msg = CONFIG.herName + ' said YES 💙 but left before pressing send.\nWhat she picked so far:\n' + (parts.join('\n') || '(nothing yet)');
+    if(msg === lastPartial) return;
+    lastPartial = msg;
+    var fd = new FormData();
+    fd.append('access_key', CONFIG.web3formsKey);
+    fd.append('subject', '⚠️ ' + CONFIG.herName + ' said YES (unfinished plan)');
+    fd.append('from_name', CONFIG.herName + ' - Date Invitation');
+    fd.append('message', msg);
+    var ok = false;
+    try{ ok = navigator.sendBeacon && navigator.sendBeacon(W3F_URL, fd); }catch(e){}
+    if(!ok){ try{ fetch(W3F_URL, {method:'POST', body: fd, keepalive:true}); }catch(e){} }
+  }
+  function whenText0(){
+    var s = state.date ? state.date.toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric',year:'numeric'}) : '';
+    return s + (state.time ? ' at ' + state.time : ' (time not chosen)');
+  }
+  document.addEventListener('visibilitychange', function(){ if(document.visibilityState === 'hidden') sendPartial(); });
+  window.addEventListener('pagehide', sendPartial);
+
   var sendBtn = document.getElementById('sendBtn');
   var statusEl = document.getElementById('sendStatus'), retryBtn = document.getElementById('retryBtn');
   var ticketSent = false, sending = false;
@@ -887,9 +922,13 @@
         statusEl.textContent = '⚠️ Setup: Web3Forms key is missing, nothing was sent.';
         return;
       }
-      if(n < 2){ setTimeout(function(){ sending = false; trySend(n+1); }, 1500); return; }
+      var code = err && err.status;
+      if(n < 2 && code !== 429){ setTimeout(function(){ sending = false; trySend(n+1); }, 1500); return; }
       sending = false;
-      statusEl.className = 'send-status warn'; statusEl.textContent = "Couldn't reach " + CONFIG.myName + ' yet. Please check your connection.';
+      statusEl.className = 'send-status warn';
+      statusEl.textContent = (code === 429)
+        ? 'Too many tries in a short time. Please wait a few minutes, then tap the button.'
+        : "Couldn't reach " + CONFIG.myName + ' yet' + (code ? ' (code ' + code + (err.message ? ': ' + err.message : '') + ')' : '') + '. Please check your connection and tap the button.';
       retryBtn.classList.remove('hidden');
     });
   }
